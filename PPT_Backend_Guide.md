@@ -2,7 +2,7 @@
 
 A FastAPI service for generating PowerPoint presentations from plain text or chat transcripts. The API accepts a request, creates a job, and returns a `job_id` immediately. Temporal runs the durable workflow, Redis stores job status/progress and idempotency data, and the worker uses LLMs to analyse the source, plan slides, build slide content, validate it, render the deck, and optionally run visual quality checks.
 
-> **Important:** This README documents the intended local setup for the modified project. Exact environment-variable names and optional endpoints should match the `.env`, `docker-compose.yml`, and API schemas in the project checkout.
+> **Important:** This README documents the intended local setup for the modified project. Exact environment-variable names and optional endpoints should match the `.env`, `docker-compose.yml`, and API schemas in the project checkout then run.
 
 ## Contents
 

@@ -1,0 +1,197 @@
+services:
+  minio:
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
+    #  image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-pptadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change-this-minio-password}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  temporal:
+    image: temporalio/temporal:latest
+    command: server start-dev --ip 0.0.0.0
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - temporal
+        - operator
+        - cluster
+        - health
+        - --address
+        - 127.0.0.1:7233
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      TEMPORAL_ADDRESS: temporal:7233
+      OUTPUT_DIR: /app/generated
+      TEMP_DIR: /app/tmp
+      GEMMA_BASE_URL: ${GEMMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      GLM_BASE_URL: ${GLM_BASE_URL:-http://host.docker.internal:8001/v1}
+      OTEL_SERVICE_NAME: ppt-generation-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_METRIC_EXPORT_INTERVAL: "10000"
+      DEPLOYMENT_ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./generated:/app/generated
+      - ./tmp:/app/tmp
+    depends_on:
+      minio:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+    init: true
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      TEMPORAL_ADDRESS: temporal:7233
+      OUTPUT_DIR: /app/generated
+      TEMP_DIR: /app/tmp
+      GEMMA_BASE_URL: ${GEMMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      GLM_BASE_URL: ${GLM_BASE_URL:-http://host.docker.internal:8001/v1}
+      OTEL_SERVICE_NAME: ppt-generation-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_METRIC_EXPORT_INTERVAL: "10000"
+      DEPLOYMENT_ENVIRONMENT: development
+    volumes:
+      - ./generated:/app/generated
+      - ./tmp:/app/tmp
+    depends_on:
+      minio:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+    init: true
+
+  frontend:
+    build:
+      context: ./ppt_api_dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "9464:9464"
+    depends_on:
+      - jaeger
+      - loki
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/jaeger:2.2.0
+    ports:
+      - "16686:16686"
+      - "4319:4317"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./observability/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+volumes:
+  minio_data:
+  redis_data:
+  loki_data:

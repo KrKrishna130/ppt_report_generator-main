@@ -1,0 +1,32 @@
+# Bare-metal copy of observability/loki-config.yaml. Data lives under var/loki in the install folder
+# (pptctl passes -config.expand-env=true and sets LOKI_DATA).
+auth_enabled: false
+server:
+  http_listen_address: 127.0.0.1
+  http_listen_port: 3100
+  grpc_listen_address: 127.0.0.1
+  grpc_listen_port: 9095
+common:
+  path_prefix: ${LOKI_DATA}
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: ${LOKI_DATA}/chunks
+      rules_directory: ${LOKI_DATA}/rules
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+limits_config:
+  allow_structured_metadata: true
+analytics:
+  reporting_enabled: false

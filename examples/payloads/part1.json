@@ -1,0 +1,16 @@
+{
+  "request_id": "part1-change-this-per-run",
+  "user_id": "local-user",
+  "prompt": "Artificial Intelligence Development: Evolution, Current State, and Future Trajectory in India",
+  "options": {
+    "content_mode": "topic",
+    "design_theme": "dark_lime",
+    "slide_count": 11,
+    "speaker_notes": true,
+    "output": [
+      "pptx",
+      "pdf",
+      "thumbnails"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "request_id": "part4-change-this-per-run",
+  "user_id": "local-user",
+  "prompt": "what is ai developements in india.",
+  "options": {
+    "content_mode": "topic",
+    "design_theme": "india_yellow",
+    "slide_count": 8,
+    "speaker_notes": true,
+    "output": [
+      "pptx",
+      "pdf",
+      "thumbnails"
+    ]
+  }
+}

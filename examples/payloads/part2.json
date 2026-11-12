@@ -1,0 +1,16 @@
+{
+  "request_id": "part2-change-this-per-run",
+  "user_id": "local-user",
+  "prompt": "Competitive Sales Battlecard Playbook",
+  "options": {
+    "content_mode": "topic",
+    "design_theme": "editorial_purple",
+    "slide_count": 11,
+    "speaker_notes": true,
+    "output": [
+      "pptx",
+      "pdf",
+      "thumbnails"
+    ]
+  }
+}

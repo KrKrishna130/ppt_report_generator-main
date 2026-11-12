@@ -1,0 +1,16 @@
+{
+  "request_id": "part3-change-this-per-run",
+  "user_id": "local-user",
+  "prompt": "Unified Operations Platform: Mid-Market Sales Pitch",
+  "options": {
+    "content_mode": "topic",
+    "design_theme": "corporate_blue",
+    "slide_count": 11,
+    "speaker_notes": true,
+    "output": [
+      "pptx",
+      "pdf",
+      "thumbnails"
+    ]
+  }
+}

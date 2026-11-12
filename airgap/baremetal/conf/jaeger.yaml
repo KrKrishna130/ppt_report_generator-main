@@ -1,0 +1,46 @@
+# Jaeger v2 (all-in-one, in-memory) for the bare-metal stack. Same as Jaeger's built-in default,
+# minus the receivers/extensions that would clash with the OTel collector on this host:
+# OTLP moves to 4319/4320, and the jaeger/zipkin receivers and remote sampling are dropped.
+service:
+  extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    resource:
+      service.name: jaeger
+    metrics:
+      level: none
+    logs:
+      level: info
+
+extensions:
+  jaeger_query:
+    storage:
+      traces: some_storage
+  jaeger_storage:
+    backends:
+      some_storage:
+        memory:
+          max_traces: 100000
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: 127.0.0.1:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4319
+      http:
+        endpoint: 127.0.0.1:4320
+
+processors:
+  batch:
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: some_storage

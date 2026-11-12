@@ -1,0 +1,20 @@
+# .env
+.venv/
+__pycache__/
+generated/*
+tmp/*
+.DS_Store
+.pytest_cache/
+
+# Node.js / React / Vite UI
+node_modules/
+dist/
+.vite/
+*.local
+
+# Logs
+*.log
+logs/
+# Swagger UI / ReDoc files, downloaded at build time by airgap/fetch_docs_assets.sh
+app/static/docs/*
+!app/static/docs/README.md

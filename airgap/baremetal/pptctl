@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Start/stop the bare-metal PPT generator stack. No root, no systemd, no network access needed.
+#   ./pptctl start | stop | restart | status | logs <service>
+# Services start in dependency order; data and logs live under var/ in this folder.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+[ -x .venv/bin/python ] || { echo "not installed yet: run ./install.sh first"; exit 1; }
+[ -f ppt.env ] || cp ppt.env.example ppt.env
+set -a; . ./ppt.env; set +a
+REDIS_PORT=${REDIS_PORT:-6379}; TEMPORAL_PORT=${TEMPORAL_PORT:-7233}   # older ppt.env files lack these
+unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy   # air-gapped: never proxy
+export NO_PROXY="127.0.0.1,localhost" no_proxy="127.0.0.1,localhost"
+
+RUN="$ROOT/var/run"; LOG="$ROOT/var/log"
+mkdir -p "$RUN" "$LOG" var/redis var/temporal var/prometheus var/loki var/grafana/data var/grafana/plugins generated tmp
+
+OBS_SERVICES="loki jaeger otelcol prometheus grafana"
+APP_SERVICES="api worker dashboard"
+if [ "${ENABLE_OBSERVABILITY:-1}" = "1" ]; then
+  SERVICES="redis temporal $OBS_SERVICES $APP_SERVICES"
+else
+  SERVICES="redis temporal $APP_SERVICES"
+fi
+ALL_SERVICES="redis temporal $OBS_SERVICES $APP_SERVICES"
+
+# Environment for the API and worker (overrides .env).
+app_env() {
+  export REDIS_URL=redis://127.0.0.1:$REDIS_PORT/0 TEMPORAL_ADDRESS=127.0.0.1:$TEMPORAL_PORT
+  export OUTPUT_DIR="$ROOT/generated" TEMP_DIR="$ROOT/tmp"
+  export GEMMA_BASE_URL GLM_BASE_URL CORS_ORIGINS
+  export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 OTEL_EXPORTER_OTLP_INSECURE=true
+  export OTEL_METRIC_EXPORT_INTERVAL=10000 DEPLOYMENT_ENVIRONMENT=airgap
+  if [ "${ENABLE_OBSERVABILITY:-1}" != "1" ]; then export OTEL_SDK_DISABLED=true; fi
+}
+
+cmd_for() {
+  case "$1" in
+    redis)      echo "bin/redis-server --bind 127.0.0.1 --port $REDIS_PORT --dir $ROOT/var/redis --save '60 1' --protected-mode yes" ;;
+    temporal)   echo "bin/temporal server start-dev --ip 127.0.0.1 --port $TEMPORAL_PORT --ui-ip $PUBLIC_HOST --ui-port $TEMPORAL_UI_PORT --db-filename $ROOT/var/temporal/temporal.db --log-level warn" ;;
+    loki)       echo "env LOKI_DATA=$ROOT/var/loki bin/loki -config.file=conf/loki.yaml -config.expand-env=true" ;;
+    jaeger)     echo "bin/jaeger --config conf/jaeger.yaml" ;;
+    otelcol)    echo "bin/otelcol-contrib --config conf/otel-collector.yaml" ;;
+    prometheus) echo "bin/prometheus --config.file=conf/prometheus.yml --storage.tsdb.path=$ROOT/var/prometheus --web.listen-address=$PUBLIC_HOST:$PROMETHEUS_PORT" ;;
+    grafana)    echo "env GF_PATHS_DATA=$ROOT/var/grafana/data GF_PATHS_LOGS=$LOG/grafana GF_PATHS_PLUGINS=$ROOT/var/grafana/plugins GF_PATHS_PROVISIONING=$ROOT/var/grafana/provisioning GF_SERVER_HTTP_ADDR=$PUBLIC_HOST GF_SERVER_HTTP_PORT=$GRAFANA_PORT opt/grafana/bin/grafana server --homepath $ROOT/opt/grafana --config $ROOT/conf/grafana.ini" ;;
+    api)        echo "env OTEL_SERVICE_NAME=ppt-generation-api .venv/bin/uvicorn app.main:app --host $PUBLIC_HOST --port $API_PORT" ;;
+    worker)     echo "env OTEL_SERVICE_NAME=ppt-generation-worker .venv/bin/python -m app.worker" ;;
+    dashboard)  echo "runtime/python/bin/python3 -m http.server $DASHBOARD_PORT --bind $PUBLIC_HOST --directory dashboard" ;;
+    *) echo "unknown service: $1" >&2; return 1 ;;
+  esac
+}
+
+pid_of() { [ -f "$RUN/$1.pid" ] && cat "$RUN/$1.pid" || true; }
+running() { local p; p=$(pid_of "$1"); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+
+http_ok() { .venv/bin/python -c "import sys,urllib.request;urllib.request.urlopen(sys.argv[1],timeout=3)" "$1" 2>/dev/null; }
+
+wait_for() {  # service, check command; up to 60 s
+  local svc=$1; shift
+  for _ in $(seq 1 60); do
+    if "$@" >/dev/null 2>&1; then return 0; fi
+    running "$svc" || { echo "   $svc exited; last log lines:"; tail -n 20 "$LOG/$svc.log"; return 1; }
+    sleep 1
+  done
+  echo "   $svc not ready after 60 s; see $LOG/$svc.log"; return 1
+}
+
+start_one() {
+  local svc=$1
+  if running "$svc"; then echo "   $svc already running (pid $(pid_of "$svc"))"; return; fi
+  ( app_env; eval "exec setsid $(cmd_for "$svc")" ) >>"$LOG/$svc.log" 2>&1 < /dev/null &
+  echo $! > "$RUN/$svc.pid"
+  echo "   $svc started (pid $!)"
+  case "$svc" in
+    redis)    wait_for redis bin/redis-cli -h 127.0.0.1 -p $REDIS_PORT ping ;;
+    temporal) wait_for temporal bin/temporal operator cluster health --address 127.0.0.1:$TEMPORAL_PORT ;;
+    api)      wait_for api http_ok "http://127.0.0.1:$API_PORT/health" ;;
+    *)        sleep 1; running "$svc" || { echo "   $svc exited; last log lines:"; tail -n 20 "$LOG/$svc.log"; return 1; } ;;
+  esac
+}
+
+stop_one() {
+  local svc=$1 p; p=$(pid_of "$svc")
+  if [ -z "$p" ] || ! kill -0 "$p" 2>/dev/null; then rm -f "$RUN/$svc.pid"; return; fi
+  kill -TERM -- "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+  for _ in $(seq 1 15); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+  kill -0 "$p" 2>/dev/null && { kill -KILL -- "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true; }
+  rm -f "$RUN/$svc.pid"; echo "   $svc stopped"
+}
+
+reverse() { local out=""; for s in $1; do out="$s $out"; done; echo "$out"; }
+
+case "${1:-}" in
+  start)
+    echo "== starting: $SERVICES"
+    for s in $SERVICES; do start_one "$s"; done
+    host=$(hostname)
+    echo "== ready"
+    echo "   API + Swagger  http://$host:$API_PORT/docs"
+    echo "   Dashboard      http://$host:$DASHBOARD_PORT"
+    echo "   Temporal UI    http://$host:$TEMPORAL_UI_PORT"
+    if [ "${ENABLE_OBSERVABILITY:-1}" = "1" ]; then
+      echo "   Grafana        http://$host:$GRAFANA_PORT  (admin / admin)"
+      echo "   Prometheus     http://$host:$PROMETHEUS_PORT"
+      echo "   Jaeger         http://$host:16686"
+    fi ;;
+  stop)    echo "== stopping"; for s in $(reverse "$ALL_SERVICES"); do stop_one "$s"; done ;;
+  restart) "$0" stop; "$0" start ;;
+  status)
+    for s in $ALL_SERVICES; do
+      if running "$s"; then printf '   %-11s running (pid %s)\n' "$s" "$(pid_of "$s")"; else printf '   %-11s stopped\n' "$s"; fi
+    done
+    if http_ok "http://127.0.0.1:$API_PORT/health"; then echo "   API /health: ok"; fi ;;
+  logs)    [ -n "${2:-}" ] || { echo "usage: $0 logs <service>"; exit 1; }; tail -n 100 -f "$LOG/$2.log" ;;
+  *) echo "usage: $0 start | stop | restart | status | logs <service>"; exit 1 ;;
+esac

@@ -1,0 +1,70 @@
+After start Swagger:
+
+1.hit /health &/health/temporal/ api
+
+2.http://localhost:8000/v1/presentations api payload like below
+
+request_id --->any but unique
+user_id--->any but unique
+type-->plain is its takes non empty value
+slide_count-->4-20
+theme-->any color
+callback_url-->null or "" or escape it
+
+============================================================
+{
+  "request_id": "sales-test-20261019-002",
+  "user_id": "test-userkr-01",
+  "prompt": "Create a professional 4-slide sales presentation for an e-commerce business. Use an attractive orange theme. Include an introduction, a sales summary with a table, a chart showing sales by category, and a conclusion with key recommendations. If real sales data is unavailable, use clearly labeled illustrative sample data. Keep all slides concise, readable, and visually consistent. Generate speaker notes.",
+  "text": {
+    "type": "plain",
+    "content": "Sales report for a fictional e-commerce business. All figures below are illustrative sample data, not actual company data. Reporting period: January to March 2026. January sales were 120000 INR, February sales were 150000 INR, and March sales were 180000 INR. Product category sales: Electronics 200000 INR, Clothing 150000 INR, Home and Kitchen 100000 INR. The main finding is that sales increased over the three-month period. Recommended actions are to review high-performing categories, improve marketing campaigns, and monitor monthly sales."
+  },
+  "options": {
+    "slide_count": 4,
+    "language": "English",
+    "theme": "orange",
+    "seed": 12345,
+    "speaker_notes": true,
+    "output": [
+      "pptx",
+      "pdf"
+    ]
+  },
+  "callback_url": null
+}
+
+
+3.copy previous generate job_id hit next api
+http://localhost:8000/v1/presentations/4890b33e-a6b3-4f98-983d-18e9754720da'
+
+See the response like : wait until completed
+
+"status": "completed",
+  "stage": "completed",
+  "progress": 100,
+  "message": "Presentation files are ready",
+  "result": {
+    "files": {
+      "manifest": "/app/generated/Report_test-userkr-01_20261019_0953AM_4890b33e.json",
+      "pdf": "/app/generated/Report_test-userkr-01_20261019_0953AM_4890b33e.pdf",
+      "pptx": "/app/generated/Report_test-userkr-01_20261019_0953AM_4890b33e.pptx"
+    },
+...............>continue
+
+4.check event is completed or not:->copy job id & hit next api
+http://localhost:8000/v1/presentations/4890b33e-a6b3-4f98-983d-18e9754720da/
+
+See the response:
+event: connected
+data: {"job_id": "4890b33e-a6b3-4f98-983d-18e9754720da"}
+
+event: terminal
+data: {"status": "completed", "message": "Presentation files are ready"}
+
+
+5./v1/presentations/{job_id}/download.{extension} --->hit this api
+http://localhost:8000/v1/presentations/4890b33e-a6b3-4f98-983d-18e9754720da/download.pptx
+
+
+

@@ -1,0 +1,10 @@
+.git
+.venv
+.pytest_cache
+**/__pycache__
+bench
+dist
+generated
+tmp
+examples/output
+ppt_api_dashboard

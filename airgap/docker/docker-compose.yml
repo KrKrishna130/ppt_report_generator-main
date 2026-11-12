@@ -1,0 +1,167 @@
+# Air-gapped Docker Compose stack for the PPT generator.
+# Every image is loaded from images/*.tar.gz by install.sh; nothing is pulled (pull_policy: never).
+# Host ports can be changed in .env (API_PORT, DASHBOARD_PORT, ...).
+name: ppt-generator
+
+x-app: &app
+  image: @APP_IMAGE@
+  pull_policy: never
+  env_file:
+    - .env
+  extra_hosts:
+    # Lets the containers reach an LLM server on the Docker host (Linux needs this mapping).
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - ./generated:/app/generated
+    - ./tmp:/app/tmp
+  depends_on:
+    redis:
+      condition: service_healthy
+    temporal:
+      condition: service_healthy
+    otel-collector:
+      condition: service_started
+  restart: unless-stopped
+  init: true
+
+x-app-env: &app-env
+  REDIS_URL: redis://redis:6379/0
+  TEMPORAL_ADDRESS: temporal:7233
+  OUTPUT_DIR: /app/generated
+  TEMP_DIR: /app/tmp
+  GEMMA_BASE_URL: ${GEMMA_BASE_URL:-http://host.docker.internal:11434/v1}
+  GLM_BASE_URL: ${GLM_BASE_URL:-http://host.docker.internal:8001/v1}
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+  OTEL_METRIC_EXPORT_INTERVAL: "10000"
+  DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-airgap}
+
+services:
+  redis:
+    image: @IMG_REDIS@
+    pull_policy: never
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  temporal:
+    image: @IMG_TEMPORAL@
+    pull_policy: never
+    command: server start-dev --ip 0.0.0.0
+    ports:
+      - "${TEMPORAL_PORT:-7233}:7233"
+      - "${TEMPORAL_UI_PORT:-8233}:8233"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  api:
+    <<: *app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *app-env
+      OTEL_SERVICE_NAME: ppt-generation-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *app-env
+      OTEL_SERVICE_NAME: ppt-generation-worker
+
+  frontend:
+    image: @DASHBOARD_IMAGE@
+    pull_policy: never
+    ports:
+      - "${DASHBOARD_PORT:-5173}:5173"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  otel-collector:
+    image: @IMG_OTEL@
+    pull_policy: never
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"
+      - "${OTEL_HTTP_PORT:-4318}:4318"
+      - "${OTEL_PROM_PORT:-9464}:9464"
+    depends_on:
+      - jaeger
+      - loki
+    restart: unless-stopped
+
+  jaeger:
+    image: @IMG_JAEGER@
+    pull_policy: never
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "${JAEGER_OTLP_PORT:-4319}:4317"
+    restart: unless-stopped
+
+  prometheus:
+    image: @IMG_PROMETHEUS@
+    pull_policy: never
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  loki:
+    image: @IMG_LOKI@
+    pull_policy: never
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./observability/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    restart: unless-stopped
+
+  grafana:
+    image: @IMG_GRAFANA@
+    pull_policy: never
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # No phone-home on an air-gapped network.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PLUGIN_ADMIN_ENABLED: "false"
+      # Grafana 11 downloads grafana-lokiexplore-app from grafana.com at startup unless this is set.
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+    volumes:
+      - ./observability/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  loki_data:

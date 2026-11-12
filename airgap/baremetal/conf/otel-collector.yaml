@@ -1,0 +1,47 @@
+# Bare-metal copy of observability/otel-collector.yaml: every service runs on this host, so the
+# exporters point at 127.0.0.1 and Jaeger takes OTLP on 4319 (the collector itself owns 4317/4318).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  debug:
+    verbosity: basic
+  prometheus:
+    endpoint: 127.0.0.1:9464
+  otlp/jaeger:
+    endpoint: 127.0.0.1:4319
+    tls:
+      insecure: true
+  otlphttp/loki:
+    endpoint: http://127.0.0.1:3100/otlp
+
+service:
+  telemetry:
+    metrics:
+      level: none   # the collector's own metrics port (8888) would clash with Jaeger's
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki, debug]
